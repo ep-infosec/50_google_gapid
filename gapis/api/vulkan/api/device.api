@@ -1,0 +1,339 @@
+// Copyright (C) 2018 Google Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Based off of the original vulkan.h header file which has the following
+// license.
+
+// Copyright (c) 2015 The Khronos Group Inc.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a
+// copy of this software and/or associated documentation files (the
+// "Materials"), to deal in the Materials without restriction, including
+// without limitation the rights to use, copy, modify, merge, publish,
+// distribute, sublicense, and/or sell copies of the Materials, and to
+// permit persons to whom the Materials are furnished to do so, subject to
+// the following conditions:
+//
+// The above copyright notice and this permission notice shall be included
+// in all copies or substantial portions of the Materials.
+//
+// THE MATERIALS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+// EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+// MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+// IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+// TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+// MATERIALS OR THE USE OR OTHER DEALINGS IN THE MATERIALS.
+
+@intenral class QueueInfo {
+  u32 QueueFamilyIndex
+  u32 QueueIndex
+  f32 Priority
+}
+
+@internal class DeviceObject {
+  VkPhysicalDevice                   PhysicalDevice
+  @unused map!(u32, string)          EnabledExtensions
+  @unused map!(u32, string)          EnabledLayers
+  @unused map!(u32, QueueInfo)       Queues
+  @unused map!(u32, ref!QueueObject) QueueObjects
+  @unused VkPhysicalDeviceFeatures   EnabledFeatures
+  @unused VkDevice                   VulkanHandle
+  @unused ref!VulkanDebugMarkerInfo  DebugInfo
+  @unused bool                       CreatedWithDeviceGroup
+  @unused VkBool32                   HostQueryReset
+
+  // Vulkan 1.1
+  @unused ref!VariablePointerFeatures VariablePointerFeatures
+  @unused ref!HalfPrecisionStorageFeatures HalfPrecisionStorageFeatures
+  @unused ref!SamplerYcbcrConversionFeatures SamplerYcbcrConversionFeatures
+  @unused ref!PhysicalDeviceScalarBlockLayoutFeaturesEXT PhysicalDeviceScalarBlockLayoutFeaturesEXT
+
+  @unused ref!Vk8BitStorageFeatures Vk8BitStorageFeatures
+  @unused ref!PhysicalDeviceUniformBufferStandardLayoutFeaturesKHR PhysicalDeviceUniformBufferStandardLayoutFeaturesKHR
+  @unused ref!PhysicalDeviceShaderSubgroupExtendedTypesFeaturesKHR PhysicalDeviceShaderSubgroupExtendedTypesFeaturesKHR
+  @unused ref!PhysicalDeviceShaderClockFeaturesKHR PhysicalDeviceShaderClockFeaturesKHR
+  @unused ref!PhysicalDeviceVulkanMemoryModelFeaturesKHR PhysicalDeviceVulkanMemoryModelFeaturesKHR
+  @unused ref!PhysicalDeviceShaderFloat16Int8FeaturesKHR PhysicalDeviceShaderFloat16Int8FeaturesKHR
+  
+  @unused ref!PhysicalDeviceShaderAtomicInt64Features PhysicalDeviceShaderAtomicInt64Features
+  @unused ref!PhysicalDeviceTimelineSemaphoreFeatures PhysicalDeviceTimelineSemaphoreFeatures
+}
+
+@indirect("VkDevice")
+@override
+cmd PFN_vkVoidFunction vkGetDeviceProcAddr(
+    VkDevice    device,
+    const char* pName) {
+
+  _ = as!string(pName)
+  return ?
+}
+
+@threadSafety("system")
+@indirect("VkPhysicalDevice", "VkInstance")
+@override
+@custom
+cmd VkResult vkCreateDevice(
+    VkPhysicalDevice             physicalDevice,
+    const VkDeviceCreateInfo*    pCreateInfo,
+    AllocationCallbacks          pAllocator,
+    VkDevice*                    pDevice) {
+  // NOTE: The logic for this function should be identical to the one of
+  // replayCreateVkDevice() in synthetic.api. Change both together.
+  device := createDeviceObject(pCreateInfo)
+
+  if (device.PhysicalDevice == null) {
+    if !(physicalDevice in PhysicalDevices) { vkErrorInvalidPhysicalDevice(physicalDevice) }
+    device.PhysicalDevice = physicalDevice
+  }
+
+  handle := ?
+  if pDevice == null { vkErrorNullPointer("VkDevice*") }
+  pDevice[0] = handle
+  device.VulkanHandle = handle
+  Devices[handle] = device
+
+  return ?
+}
+
+@threadSafety("system")
+@indirect("VkDevice")
+@override
+@custom
+cmd void vkDestroyDevice(
+    VkDevice                     device,
+    AllocationCallbacks          pAllocator) {
+  if (device in Devices) {
+    dev := Devices[device]
+    for _ , _ , v in dev.QueueObjects {
+      if LastBoundQueue == v {
+        LastBoundQueue = null
+      }
+      for i in (0 .. LastPresentInfo.PresentImageCount) {
+        if (LastPresentInfo.PresentImages[i] != null) {
+          if (LastPresentInfo.PresentImages[i].Device == device) {
+            LastPresentInfo.PresentImages[i] = null
+          }
+        }
+      }
+      delete(Queues, v.VulkanHandle)
+    }
+  }
+
+  delete(Devices, device)
+}
+
+@threadSafety("system")
+@indirect("VkDevice")
+@threadsafe
+@alive
+cmd VkResult vkDeviceWaitIdle(
+    VkDevice device) {
+  if !(device in Devices) { vkErrorInvalidDevice(device) }
+  return ?
+}
+
+// Marks the fields that need to be observed in a VkDeviceCreateInfo struct and populates and returns a DeviceObject.
+sub ref!DeviceObject createDeviceObject(const VkDeviceCreateInfo* data) {
+  object := new!DeviceObject()
+  if data == null { vkErrorNullPointer("VkDeviceCreateInfo") }
+  info := data[0]
+
+  // handle pNext
+  if info.pNext != null {
+    numPNext := numberOfPNext(info.pNext)
+    next := MutableVoidPtr(as!void*(info.pNext))
+    for i in (0 .. numPNext) {
+      sType := as!const VkStructureType*(next.Ptr)[0:1][0]
+      switch sType {
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTER_FEATURES: {
+          ext := as!VkPhysicalDeviceVariablePointerFeatures*(next.Ptr)[0]
+          object.VariablePointerFeatures = new!VariablePointerFeatures(
+            VariablePointersStorageBuffer: ext.variablePointersStorageBuffer,
+            VariablePointers: ext.variablePointers)
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES: {
+          ext := as!VkPhysicalDevice16BitStorageFeatures*(next.Ptr)[0]
+          object.HalfPrecisionStorageFeatures = new!HalfPrecisionStorageFeatures(StorageBuffer16BitAccess: ext.storageBuffer16BitAccess,
+          UniformAndStorageBuffer16BitAccess: ext.uniformAndStorageBuffer16BitAccess,
+          StoragePushConstant16: ext.storagePushConstant16,
+          StorageInputOutput16: ext.storageInputOutput16)
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES: {
+          ext := as!VkPhysicalDeviceSamplerYcbcrConversionFeatures*(next.Ptr)[0]
+          object.SamplerYcbcrConversionFeatures = new!SamplerYcbcrConversionFeatures(
+            SamplerYcbcrConversion: ext.samplerYcbcrConversion)
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SCALAR_BLOCK_LAYOUT_FEATURES_EXT: {
+          ext := as!VkPhysicalDeviceScalarBlockLayoutFeaturesEXT*(next.Ptr)[0]
+          object.PhysicalDeviceScalarBlockLayoutFeaturesEXT = new!PhysicalDeviceScalarBlockLayoutFeaturesEXT(
+            ScalarBlockLayout: ext.scalarBlockLayout)
+        }
+        case VK_STRUCTURE_TYPE_DEVICE_GROUP_DEVICE_CREATE_INFO: {
+          ext := as!VkDeviceGroupDeviceCreateInfo*(next.Ptr)[0]
+          if (ext.physicalDeviceCount > 1) {
+            vkErrorUnsupported("More than one physical device in a devicegroup")
+          }
+          if (ext.physicalDeviceCount > 0) {
+            if !(ext.pPhysicalDevices[0] in PhysicalDevices) { vkErrorInvalidPhysicalDevice(ext.pPhysicalDevices[0]) }
+            object.PhysicalDevice = ext.pPhysicalDevices[0]
+            object.CreatedWithDeviceGroup = true
+          }
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES_EXT: {
+            ext := as!VkPhysicalDeviceHostQueryResetFeaturesEXT*(next.Ptr)[0]
+            object.HostQueryReset = ext.hostQueryReset
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES_KHR: {
+          ext := as!VkPhysicalDevice8BitStorageFeaturesKHR*(next.Ptr)[0]
+          object.Vk8BitStorageFeatures = new!Vk8BitStorageFeatures(
+            StorageBuffer8BitAccess: ext.storageBuffer8BitAccess,
+            UniformAndStorageBuffer8BitAccess: ext.uniformAndStorageBuffer8BitAccess,
+            StoragePushConstant8: ext.storagePushConstant8)
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFORM_BUFFER_STANDARD_LAYOUT_FEATURES_KHR: {
+          ext := as!VkPhysicalDeviceUniformBufferStandardLayoutFeaturesKHR*(next.Ptr)[0]
+          object.PhysicalDeviceUniformBufferStandardLayoutFeaturesKHR = new!PhysicalDeviceUniformBufferStandardLayoutFeaturesKHR(
+            UniformBufferStandardLayout: ext.uniformBufferStandardLayout
+          )
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES_KHR: {
+          ext := as!VkPhysicalDeviceShaderSubgroupExtendedTypesFeaturesKHR*(next.Ptr)[0]
+          object.PhysicalDeviceShaderSubgroupExtendedTypesFeaturesKHR = new!PhysicalDeviceShaderSubgroupExtendedTypesFeaturesKHR(
+            ShaderSubgroupExtendedTypes: ext.shaderSubgroupExtendedTypes)
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR: {
+          ext := as!VkPhysicalDeviceShaderClockFeaturesKHR*(next.Ptr)[0]
+          object.PhysicalDeviceShaderClockFeaturesKHR = new!PhysicalDeviceShaderClockFeaturesKHR(
+            ShaderSubgroupClock: ext.shaderSubgroupClock,
+            ShaderDeviceClock: ext.shaderDeviceClock
+          )
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES_KHR: {
+          ext := as!VkPhysicalDeviceVulkanMemoryModelFeaturesKHR*(next.Ptr)[0]
+          object.PhysicalDeviceVulkanMemoryModelFeaturesKHR = new!PhysicalDeviceVulkanMemoryModelFeaturesKHR(
+            VulkanMemoryModel: ext.vulkanMemoryModel,
+            VulkanMemoryModelDeviceScope: ext.vulkanMemoryModelDeviceScope,
+            VulkanMemoryModelAvailabilityVisibilityChains: ext.vulkanMemoryModelAvailabilityVisibilityChains,
+          )
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR: {
+          ext := as!VkPhysicalDeviceShaderFloat16Int8FeaturesKHR*(next.Ptr)[0]
+          object.PhysicalDeviceShaderFloat16Int8FeaturesKHR = new!PhysicalDeviceShaderFloat16Int8FeaturesKHR(
+            ShaderFloat16: ext.shaderFloat16,
+            ShaderInt8: ext.shaderInt8,
+          )
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES_KHR: {
+          ext := as!VkPhysicalDeviceShaderAtomicInt64FeaturesKHR*(next.Ptr)[0]
+          object.PhysicalDeviceShaderAtomicInt64Features = new!PhysicalDeviceShaderAtomicInt64Features(
+            ShaderBufferInt64Atomics: ext.shaderBufferInt64Atomics,
+            ShaderSharedInt64Atomics: ext.shaderSharedInt64Atomics,
+          )
+        }
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES: {
+          ext := as!VkPhysicalDeviceTimelineSemaphoreFeatures*(next.Ptr)[0]
+          object.PhysicalDeviceTimelineSemaphoreFeatures = new!PhysicalDeviceTimelineSemaphoreFeatures(
+            TimelineSemaphore: ext.timelineSemaphore,
+          )
+        }
+        default: {
+          // do nothing
+        }
+      }
+      // TODO: handle extensions for VkDeviceCreateInfo
+      next.Ptr = as!VulkanStructHeader*(next.Ptr)[0:1][0].PNext
+    }
+  }
+
+  queueCreateInfos := info.pQueueCreateInfos[0:info.queueCreateInfoCount]
+  for i in (0 .. info.queueCreateInfoCount) {
+    queue_info := queueCreateInfos[i]
+
+    // handle pNext
+    if queue_info.pNext != null {
+      numPNext := numberOfPNext(queue_info.pNext)
+      next := MutableVoidPtr(as!void*(queue_info.pNext))
+      for i in (0 .. numPNext) {
+        sType := as!const VkStructureType*(next.Ptr)[0:1][0]
+        _ = sType
+        // TODO: handle extensions for VkDeviceQueueCreateInfo
+        next.Ptr = as!VulkanStructHeader*(next.Ptr)[0:1][0].PNext
+      }
+    }
+
+    queue_priorities := queue_info.pQueuePriorities[0:queue_info.queueCount]
+    for j in (0 .. queue_info.queueCount) {
+      object.Queues[len(object.Queues)] =
+      QueueInfo(QueueFamilyIndex: queue_info.queueFamilyIndex,
+        QueueIndex:               j,
+        Priority:                 queue_priorities[j])
+    }
+  }
+
+  layerNames := info.ppEnabledLayerNames[0:info.enabledLayerCount]
+  for i in (0 .. info.enabledLayerCount) {
+    object.EnabledLayers[i] = as!string(layerNames[i])
+  }
+
+  supported := supportedDeviceExtensions()
+  extensionNames := info.ppEnabledExtensionNames[0:info.enabledExtensionCount]
+  for i in (0 .. info.enabledExtensionCount) {
+    ext := as!string(extensionNames[i])
+    if !(ext in supported.ExtensionNames) { vkErrorUnrecognizedExtension(extensionNames[i]) }
+    object.EnabledExtensions[i] = ext
+  }
+
+  if info.pEnabledFeatures != null {
+    object.EnabledFeatures = info.pEnabledFeatures[0]
+  }
+
+  return object
+}
+
+// ----------------------------------------------------------------------------
+// Vulkan 1.1 Core
+// ----------------------------------------------------------------------------
+
+@internal class VariablePointerFeatures {
+  VkBool32        VariablePointersStorageBuffer
+  VkBool32        VariablePointers
+}
+
+@internal class HalfPrecisionStorageFeatures{
+  VkBool32        StorageBuffer16BitAccess
+  VkBool32        UniformAndStorageBuffer16BitAccess
+  VkBool32        StoragePushConstant16
+  VkBool32        StorageInputOutput16
+}
+
+@internal class Vk8BitStorageFeatures {
+  VkBool32        StorageBuffer8BitAccess
+  VkBool32        UniformAndStorageBuffer8BitAccess
+  VkBool32        StoragePushConstant8
+}
+
+@internal class SamplerYcbcrConversionFeatures {
+  VkBool32        SamplerYcbcrConversion
+}
+
+@internal class PhysicalDeviceShaderAtomicInt64Features {
+  VkBool32        ShaderBufferInt64Atomics
+  VkBool32        ShaderSharedInt64Atomics
+}
+
+@internal class PhysicalDeviceTimelineSemaphoreFeatures {
+  VkBool32        TimelineSemaphore
+}

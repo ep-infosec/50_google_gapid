@@ -1,0 +1,61 @@
+// Copyright (C) 2020 Google Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+package vulkan_pb;
+option go_package = "github.com/google/gapid/gapis/api/vulkan/vulkan_pb";
+
+message ExternalBufferData {
+  uint64 buffer = 1;
+  uint64 buffer_offset = 2;
+  uint64 data_offset = 3;
+  uint64 size = 4;
+  uint32 submit_index = 5;
+  uint32 command_buffer_index = 6;
+}
+
+message ExternalImageDataRange {
+  uint64 data_offset = 1;
+  uint32 aspect_mask = 2;
+  uint32 mip_level = 3;
+  uint32 base_array_layer = 4;
+  uint32 layer_count = 5;
+}
+
+message ExternalImageData {
+  uint64 image = 1;
+  uint32 aspect_mask = 2;
+  uint32 base_mip_level = 3;
+  uint32 level_count = 4;
+  uint32 base_array_layer = 5;
+  uint32 layer_count = 6;
+  uint32 old_layout = 7;
+  uint32 new_layout = 8;
+  uint32 submit_index = 9;
+  uint32 command_buffer_index = 10;
+  repeated ExternalImageDataRange ranges = 11;
+}
+
+message ExternalMemoryData {
+  sint64 res_index = 1;
+  sint64 res_size = 2;
+  repeated ExternalBufferData buffers = 3;
+  repeated ExternalImageData images = 4;
+}
+
+message SemaphoreState {
+  repeated uint64 semaphores = 1;
+  repeated uint64 values = 2;
+}
